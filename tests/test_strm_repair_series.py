@@ -119,6 +119,25 @@ def test_an_orphan_is_removed_and_put_back_on_the_wanted_list(media):
     assert result["ok"] == 2
 
 
+def test_an_orphan_with_a_future_air_date_is_requeued_as_not_aired(media):
+    root, notes = media
+    show = _show(root)
+    for ep in (1, 2):
+        p = _episode(show, 1, ep, "placeholder")
+        token = _register("tt9288030", 1, ep, p)
+        p.write_text(f"{HOST}/stream/{token}", encoding="utf-8")
+    orphan = _episode(show, 1, 3, f"{HOST}/stream/{'f' * 16}")
+    orphan_nfo = orphan.with_suffix(".nfo")
+    db.upsert_wanted_episode("tt9288030", None, "Reacher", 1, 3, "2999-01-01")
+
+    result = strm_generator.repair_expired_strms("series")
+
+    assert not orphan.exists() and not orphan_nfo.exists()
+    assert result["requeued"] == 1
+    row = db.get_wanted_episode("tt9288030", 1, 3)
+    assert row is not None and row["status"] == "not_aired"
+
+
 def test_the_guard_skips_a_show_whose_files_are_mostly_orphans(media, caplog):
     root, notes = media
     show = _show(root)
