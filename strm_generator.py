@@ -2216,8 +2216,152 @@ def _migrate_to_canonical_names_locked() -> dict:
     }
 
 
+# Season and episode from an episode file name: S01E03, S1E3, S01E123.
+# _EP_RE near the top of this module stops at two episode digits; long
+# running shows pass 99.
+_EP_TAG_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})(?!\d)")
+_SEASON_DIR_RE = re.compile(r"^Season \d+$")
+_IMDB_IN_NFO_RE = re.compile(
+    r"<imdbid>(tt\d+)</imdbid>"
+    r"|<uniqueid[^>]*type=['\"]imdb['\"][^>]*>(tt\d+)</uniqueid>"
+    r"|(tt\d{7,})"
+)
+
+
+def _series_show_folder(strm_path: Path) -> Path:
+    """The show folder for an episode file: the grandparent when the file
+    sits in a Season NN folder, else the parent."""
+    parent = strm_path.parent
+    return parent.parent if _SEASON_DIR_RE.match(parent.name) else parent
+
+
+def _series_imdb(show_folder: Path) -> str | None:
+    """IMDb id of a show: tvshow.nfo first, any other .nfo in the show
+    folder as a fallback. None when nothing readable names one."""
+    candidates = [show_folder / "tvshow.nfo"]
+    candidates += [p for p in sorted(show_folder.glob("*.nfo")) if p.name != "tvshow.nfo"]
+    for nfo in candidates:
+        if not nfo.is_file():
+            continue
+        try:
+            text = nfo.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        m = _IMDB_IN_NFO_RE.search(text)
+        if m:
+            return next(g for g in m.groups() if g)
+    return None
+
+
+def _series_requeue(imdb_id: str, show_name: str, strm_path: Path,
+                    season: int, episode: int) -> None:
+    """Remove an orphaned episode file and put the episode back on the
+    wanted list: the recipe catbox_packs.detach_episode uses, minus the
+    hash exclusion, because an orphan has no hash to exclude."""
+    import datetime as _dt
+    import jellyfin
+    for path in (strm_path, strm_path.with_suffix(".nfo")):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.warning("repair_strms: could not remove %s: %s", path, exc)
+    jellyfin.note_change(strm_path, "Deleted")
+    req = db.get_request_by_imdb(imdb_id) or {}
+    title = req.get("title") or show_name
+    db.upsert_wanted_episode(imdb_id, req.get("tmdb_id"), title, season, episode, None)
+    row = db.get_wanted_episode(imdb_id, season, episode) or {}
+    air_date = row.get("air_date")
+    status = "wanted"
+    if air_date and air_date > _dt.date.today().isoformat():
+        status = "not_aired"
+    db.mark_episode_status(imdb_id, season, episode, status)
+    log.info("repair_strms: orphaned S%02dE%02d of %s removed, requeued as %s",
+             season, episode, show_name, status)
+
+
+def _repair_series_strms_locked() -> dict:
+    """The series walker of repair_expired_strms. Files live under
+    MEDIA_PATH/series/<Show>/Season NN/, one per episode with its own
+    token, so every file is resolved by show, season and episode. There is
+    no pass 1: a folder with no .strm belongs to the series monitor.
+    Orphans are decided per show, and a show with more than half of its
+    files orphaned is skipped, so a database restored from an old backup
+    cannot turn into a library-wide delete."""
+    import catbox as _catbox
+    import jellyfin
+
+    zero = {"scanned": 0, "ok": 0, "missing_strm": 0, "orphaned_tokens": 0,
+            "relinked": 0, "requeued": 0, "skipped": 0, "guarded": 0}
+    root = Path(MEDIA_PATH) / "series"
+    if not root.is_dir():
+        return zero
+
+    scanned = ok = relinked = requeued = skipped = guarded = 0
+    per_show: dict[Path, dict] = {}
+
+    for strm_path in sorted(root.rglob("*.strm")):
+        scanned += 1
+        m = _EP_TAG_RE.search(strm_path.name)
+        if not m:
+            skipped += 1
+            log.info("repair_strms: no episode tag in %s  -  skipping", strm_path.name)
+            continue
+        season, episode = int(m.group(1)), int(m.group(2))
+        show = _series_show_folder(strm_path)
+        entry = per_show.setdefault(show, {"imdb": _series_imdb(show), "files": 0, "orphans": []})
+        if not entry["imdb"]:
+            skipped += 1
+            continue
+        entry["files"] += 1
+        try:
+            content = strm_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            skipped += 1
+            continue
+        row = db.get_virtual_item_by_episode(entry["imdb"], season, episode)
+        if row is None:
+            entry["orphans"].append((strm_path, season, episode))
+            continue
+        want = _catbox.proxy_url(row["token"])
+        if content == want:
+            ok += 1
+            continue
+        try:
+            strm_path.write_text(want, encoding="utf-8")
+        except OSError as exc:
+            log.warning("repair_strms: could not write %s: %s", strm_path, exc)
+            skipped += 1
+            continue
+        jellyfin.note_change(strm_path, "Modified")
+        relinked += 1
+        log.info("repair_strms: rewrote %s → token %s", strm_path.name, row["token"])
+
+    for show, entry in per_show.items():
+        orphans = entry["orphans"]
+        if not orphans:
+            continue
+        if len(orphans) * 2 > entry["files"]:
+            log.warning("repair_strms: %s: %d of %d episode files have no virtual item, skipping the show",
+                        show.name, len(orphans), entry["files"])
+            guarded += len(orphans)
+            continue
+        for strm_path, season, episode in orphans:
+            _series_requeue(entry["imdb"], show.name, strm_path, season, episode)
+            requeued += 1
+
+    log.info("repair_strms (series): ok=%d relinked=%d requeued=%d guarded=%d skipped=%d",
+             ok, relinked, requeued, guarded, skipped)
+    return {
+        "scanned": scanned, "ok": ok, "missing_strm": 0,
+        "orphaned_tokens": requeued + guarded, "relinked": relinked,
+        "requeued": requeued, "skipped": skipped, "guarded": guarded,
+    }
+
+
 def repair_expired_strms(media_type: str = "movie") -> dict:
-    """Find and fix all unplayable movie entries.
+    """Find and fix all unplayable movie and series entries.
 
     Three kinds of breakage handled:
     1. Movie folder exists but has NO .strm file at all (NFO/poster present,
@@ -2230,14 +2374,20 @@ def repair_expired_strms(media_type: str = "movie") -> dict:
          to point at the correct catbox proxy URL.
       b. Otherwise → delete the broken .strm (if any) and requeue via processor
          so it gets a fresh catbox token on the next pass.
+
+    Series files (media_type="series") are walked by _repair_series_strms_locked:
+    resolved per episode, orphans requeued per show under a one-half guard,
+    no pass 1.
     Returns a summary dict with counts.
     """
     if not _maintenance_lock.acquire(blocking=False):
         log.warning("repair_expired_strms: maintenance already running  -  skipping")
         return {"scanned": 0, "ok": 0, "missing_strm": 0, "orphaned_tokens": 0,
-                "relinked": 0, "requeued": 0, "skipped": 0}
+                "relinked": 0, "requeued": 0, "skipped": 0, "guarded": 0}
     try:
-        return _repair_expired_strms_locked(media_type)
+        if media_type == "movie":
+            return _repair_expired_strms_locked("movie")
+        return _repair_series_strms_locked()
     finally:
         _maintenance_lock.release()
 
@@ -2252,7 +2402,7 @@ def _repair_expired_strms_locked(media_type: str = "movie") -> dict:
     root = media / sub
     if not root.is_dir():
         return {"scanned": 0, "ok": 0, "missing_strm": 0, "orphaned_tokens": 0,
-                "relinked": 0, "requeued": 0, "skipped": 0}
+                "relinked": 0, "requeued": 0, "skipped": 0, "guarded": 0}
 
     scanned = ok = missing = orphaned = relinked = requeued = skipped = 0
 
@@ -2260,12 +2410,7 @@ def _repair_expired_strms_locked(media_type: str = "movie") -> dict:
         for nfo in folder.glob("*.nfo"):
             try:
                 text = nfo.read_text(encoding="utf-8", errors="ignore")
-                m = _re.search(
-                    r"<imdbid>(tt\d+)</imdbid>"
-                    r"|<uniqueid[^>]*type=['\"]imdb['\"][^>]*>(tt\d+)</uniqueid>"
-                    r"|(tt\d{7,})",
-                    text,
-                )
+                m = _IMDB_IN_NFO_RE.search(text)
                 if m:
                     return next(g for g in m.groups() if g)
             except Exception:
@@ -2383,7 +2528,7 @@ def _repair_expired_strms_locked(media_type: str = "movie") -> dict:
     return {
         "scanned": scanned, "ok": ok, "missing_strm": missing,
         "orphaned_tokens": orphaned, "relinked": relinked,
-        "requeued": requeued, "skipped": skipped,
+        "requeued": requeued, "skipped": skipped, "guarded": 0,
     }
 
 
