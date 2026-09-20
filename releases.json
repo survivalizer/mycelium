@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.0.1",
+    "date": "2026-09-20",
+    "notes": [
+      "The automatic .strm repair (every six hours) and the Repair broken strm files button now cover series as well as movies: an episode file with a stale address is rewritten to the current proxy URL, a file whose token Mycelium no longer knows is removed and the episode goes back on the wanted list, and a show with more than half of its files orphaned in one run is skipped and logged so a restored database cannot cascade into a library-wide delete",
+      "The Clean up duplicate strm files button says it covers movies only, which is what it always did; series duplicates are removed by the cleanup run. The repair result line now reports one set of counts per media type, including skipped files"
+    ]
+  },
+  {
     "version": "1.0.0",
     "date": "2026-09-14",
     "notes": [
