@@ -2310,7 +2310,9 @@ def _repair_series_strms_locked() -> dict:
             continue
         season, episode = int(m.group(1)), int(m.group(2))
         show = _series_show_folder(strm_path)
-        entry = per_show.setdefault(show, {"imdb": _series_imdb(show), "files": 0, "orphans": []})
+        entry = per_show.get(show)
+        if entry is None:
+            entry = per_show[show] = {"imdb": _series_imdb(show), "files": 0, "orphans": []}
         if not entry["imdb"]:
             skipped += 1
             continue

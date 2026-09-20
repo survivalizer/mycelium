@@ -200,6 +200,46 @@ def test_three_digit_episode_numbers_resolve(media):
     assert path.read_text(encoding="utf-8") == f"{HOST}/stream/{token}"
 
 
+def test_the_show_nfo_is_read_once_per_show(media, monkeypatch):
+    root, _ = media
+    show = _show(root)
+    paths = [_episode(show, 1, ep, "placeholder") for ep in (1, 2, 3)]
+    for ep, path in zip((1, 2, 3), paths):
+        token = _register("tt9288030", 1, ep, path)
+        path.write_text(f"{HOST}/stream/{token}", encoding="utf-8")
+
+    calls: list[Path] = []
+    original = strm_generator._series_imdb
+
+    def counting(show_folder):
+        calls.append(show_folder)
+        return original(show_folder)
+
+    monkeypatch.setattr(strm_generator, "_series_imdb", counting)
+
+    result = strm_generator.repair_expired_strms("series")
+
+    assert result["ok"] == 3
+    assert len(calls) == 1
+
+
+def test_a_show_with_the_wrong_imdb_id_in_its_nfo_is_guarded_whole(media, caplog):
+    root, notes = media
+    show = _show(root, imdb="tt0000001")
+    paths = [_episode(show, 1, ep, f"{HOST}/stream/{'f' * 16}") for ep in (1, 2, 3)]
+
+    with caplog.at_level(logging.WARNING):
+        result = strm_generator.repair_expired_strms("series")
+
+    assert all(p.exists() and p.with_suffix(".nfo").exists() for p in paths)
+    assert result["guarded"] == 3 and result["requeued"] == 0 and result["orphaned_tokens"] == 3
+    for ep in (1, 2, 3):
+        assert db.get_wanted_episode("tt0000001", 1, ep) is None
+    assert any("Reacher" in r.getMessage() and "skipping the show" in r.getMessage()
+               for r in caplog.records)
+    assert notes == []
+
+
 def test_a_busy_maintenance_lock_returns_the_zero_shape_with_guarded():
     assert strm_generator._maintenance_lock.acquire(blocking=False)
     try:
