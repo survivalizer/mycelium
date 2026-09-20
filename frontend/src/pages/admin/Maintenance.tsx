@@ -449,7 +449,7 @@ function FilesystemToolsPanel() {
           run={async () => {
             const d = await api.repairStrms();
             const sum = (k: keyof RepairCounts) => (d.movie?.[k] ?? 0) + (d.series?.[k] ?? 0);
-            return `scanned: ${sum('scanned')}, ok: ${sum('ok')}, relinked: ${sum('relinked')}, requeued: ${sum('requeued')}, guarded: ${sum('guarded')}`;
+            return `scanned: ${sum('scanned')}, ok: ${sum('ok')}, relinked: ${sum('relinked')}, requeued: ${sum('requeued')}, guarded: ${sum('guarded')}, skipped: ${sum('skipped')}`;
           }}
         />
         <ActionButton
