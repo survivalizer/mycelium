@@ -248,15 +248,13 @@ def api_generate_nfos():
 @bp.post("/ui/api/repair-strms")
 @auth.require_auth
 def ui_api_repair_strms():
-    """Scan movie .strm files for expired direct TorBox CDN URLs and repair them.
-    Files with a catbox token → left alone. Files with a direct URL:
-      - if a virtual_item exists for that imdb_id → rewrite to catbox proxy URL
-      - otherwise → delete the .strm and immediately requeue via processor
-    """
+    """Repair .strm files for movies and series: rewrite a file whose URL is
+    not the current catbox proxy URL for its token, requeue a file whose
+    token Mycelium no longer knows. Answers {"movie": counts, "series":
+    counts}; see strm_generator.repair_expired_strms for the keys."""
     if not auth.is_admin():
         return jsonify(error="unauthorized"), 401
-    result = strm_generator.repair_expired_strms(media_type="movie")
-    return jsonify(**result)
+    return jsonify(**strm_generator.repair_all_strms())
 
 
 @bp.post("/ui/api/torbox/scan-library")

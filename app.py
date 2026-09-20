@@ -172,11 +172,11 @@ def _start_scheduler() -> BackgroundScheduler:
 
     if CATBOX_MODE:
         scheduler.add_job(
-            strm_generator.repair_expired_strms,
+            strm_generator.repair_all_strms,
             trigger="interval", hours=6,
             id="strm_repair", next_run_time=None,
         )
-        log.info("Scheduled automatic .strm repair every 6h")
+        log.info("Scheduled automatic .strm repair (movies and series) every 6h")
 
     import disk_sync
     DISK_SYNC_INTERVAL_MINUTES = int(_settings_mod.get("DISK_SYNC_INTERVAL_MINUTES", cfg.DISK_SYNC_INTERVAL_MINUTES) or 0)

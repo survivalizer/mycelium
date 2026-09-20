@@ -217,3 +217,26 @@ def test_the_movie_walker_still_reports_the_same_keys(media):
     result = strm_generator.repair_expired_strms("movie")
     assert set(result) == {"scanned", "ok", "missing_strm", "orphaned_tokens",
                            "relinked", "requeued", "skipped", "guarded"}
+
+
+from _routes import src_for_route  # noqa: E402
+
+
+def test_repair_all_runs_both_walkers_once_each(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(strm_generator, "repair_expired_strms",
+                        lambda media_type="movie": (calls.append(media_type), {"scanned": 1})[1])
+    result = strm_generator.repair_all_strms()
+    assert calls == ["movie", "series"]
+    assert result == {"movie": {"scanned": 1}, "series": {"scanned": 1}}
+
+
+def test_the_scheduler_and_the_route_use_repair_all():
+    app_src = _src("app.py")
+    assert "strm_generator.repair_all_strms," in app_src
+    assert "strm_generator.repair_expired_strms," not in app_src
+    assert "movies and series" in app_src
+    route_src = src_for_route("/ui/api/repair-strms")
+    body = route_src.split('@bp.post("/ui/api/repair-strms")')[1].split("\n@bp.")[0]
+    assert "strm_generator.repair_all_strms()" in body
+    assert 'repair_expired_strms(media_type="movie")' not in body

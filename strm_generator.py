@@ -2392,6 +2392,13 @@ def repair_expired_strms(media_type: str = "movie") -> dict:
         _maintenance_lock.release()
 
 
+def repair_all_strms() -> dict:
+    """Both walkers, one lock acquisition each, so a lock held during one
+    does not skip the other. Returns {"movie": counts, "series": counts}."""
+    return {"movie": repair_expired_strms("movie"),
+            "series": repair_expired_strms("series")}
+
+
 def _repair_expired_strms_locked(media_type: str = "movie") -> dict:
     import re as _re
     import catbox as _catbox
