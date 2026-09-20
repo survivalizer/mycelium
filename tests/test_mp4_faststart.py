@@ -104,3 +104,23 @@ def test_stco_overflow_raises_instead_of_wrapping():
     moov = bytearray(_wrap_to_moov(_stco([100])))
     with pytest.raises(ValueError):
         fs._rewrite_offsets(moov, delta, moov_offset)
+
+
+def test_load_meta_reads_the_fixed_fields_without_the_moov(tmp_path, monkeypatch):
+    """The first hop of every play calls this: it must agree with load() on
+    the sentinel fields and never read the header."""
+    monkeypatch.setattr(fs, "_cache_path", lambda token: tmp_path / f"{token}.fsh")
+    header = b"m" * 4096
+    (tmp_path / "mkv.fsh").write_bytes(struct.pack(">QQQQ", 0, 0, 9_000, 0))
+    (tmp_path / "mp4.fsh").write_bytes(struct.pack(">QQQQ", 24, 4096, 9_000, 4904) + header)
+    (tmp_path / "legacy.fsh").write_bytes(struct.pack(">QQQ", 0, 0, 7_000))
+    for token in ("mkv", "mp4", "legacy"):
+        full = fs.load(token)
+        meta = fs.load_meta(token)
+        assert "header" not in meta
+        for key in ("ftyp_size", "moov_size", "cdn_size", "moov_offset", "already_fast"):
+            assert meta[key] == full[key], (token, key)
+    assert fs.load_meta("mkv")["already_fast"] is True
+    assert fs.load_meta("mp4")["already_fast"] is False
+    assert fs.load_meta("legacy")["cdn_size"] == 7_000
+    assert fs.load_meta("missing") is None

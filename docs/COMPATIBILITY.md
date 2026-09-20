@@ -154,13 +154,25 @@ $ curl -X POST https://mycelium.example/webhook/arr \
 
 The URL written into every `.strm` file. `<token>` is an unauthenticated
 capability token, not a session; Jellyfin and Plex request it without
-logging in. No request body. Always answers with a 302 redirect to
-`/spore-stream/<token>`; this route never touches TorBox itself.
+logging in. No request body. Always answers with a 302 redirect, to one
+of two places: straight to the TorBox CDN URL when the address is already
+known, the file is served by redirect (a non-MP4 file) and the link was
+confirmed alive recently (since 1.1.0), otherwise to
+`/spore-stream/<token>`, which resolves and decides. A client that follows
+redirects sees no difference between the two; a client that inspects the
+`Location` must accept either. This route never touches TorBox itself and
+never probes the CDN on the request: a liveness confirmation older than
+its two-minute window is still used for up to eight minutes more while a
+background probe refreshes it.
 
 ```
 $ curl -i https://mycelium.example/stream/1a2b3c4d5e6f7890
 HTTP/1.1 302 FOUND
 Location: /spore-stream/1a2b3c4d5e6f7890
+
+$ curl -i https://mycelium.example/stream/1a2b3c4d5e6f7890   # warm address
+HTTP/1.1 302 FOUND
+Location: https://<torbox-cdn-host>/dl/...
 ```
 
 ### `GET /spore-stream/<token>`

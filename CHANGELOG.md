@@ -2,6 +2,27 @@
 
 All notable changes to Mycelium are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- `/stream/<token>` redirects straight to the TorBox CDN once the address
+  is warm: the URL is cached, the file is served by redirect (MKV and
+  other non-MP4 files) and the link was confirmed alive recently.
+  Anything else still goes through `/spore-stream/<token>` as before. A
+  media server that relays for its client (Jellyfin follows both
+  redirects for every Range request the client makes) saves a round trip
+  through the proxy per request. The status stays 302; a client that
+  inspects the `Location` must accept either target, see
+  `docs/COMPATIBILITY.md`.
+- The CDN liveness check no longer runs on the request thread for a
+  steady play: an entry older than its two-minute window is still used
+  for up to eight minutes more while a background probe refreshes it, so
+  no request pays the round trip. Only an entry older than that, or none
+  at all, is probed inline. A link that dies inside that window can be
+  handed out once before the probe forgets it and the next request
+  re-resolves.
+
 ## [1.0.1] - 2026-09-20
 
 ### Fixed

@@ -197,6 +197,140 @@ def test_the_redirect_branch_still_asks_before_it_hands_out_a_cached_url():
     assert "fresh = catbox.materialize(token)" in body, "a dead link is not re-resolved"
 
 
+def test_a_stale_entry_is_handed_out_and_refreshed_behind_the_request():
+    """Inside the grace past the TTL, no play pays the round trip: the old
+    answer is used and the refresh runs off the request thread."""
+    probed, refreshed = [], []
+    cache = {"u": 130.0}
+    assert sd.link_is_alive("u", lambda u: probed.append(u) or 200, cache,
+                            now=131.0, ttl=30.0, refresh=refreshed.append,
+                            grace=480.0) is True
+    assert probed == [], "a stale entry was probed on the request thread"
+    assert refreshed == ["u"], "the stale entry was not handed to the refresher"
+    assert cache == {"u": 130.0}, "only the refresher may move the expiry"
+
+
+def test_a_stale_entry_without_a_refresher_is_probed_inline():
+    probed = []
+    cache = {"u": 130.0}
+    assert sd.link_is_alive("u", lambda u: probed.append(u) or 200, cache,
+                            now=131.0, ttl=30.0, grace=480.0) is True
+    assert probed == ["u"]
+    assert cache == {"u": 161.0}
+
+
+def test_an_entry_past_the_grace_is_probed_inline_even_with_a_refresher():
+    probed, refreshed = [], []
+    cache = {"u": 130.0}
+    assert sd.link_is_alive("u", lambda u: probed.append(u) or 200, cache,
+                            now=611.0, ttl=30.0, refresh=refreshed.append,
+                            grace=480.0) is True
+    assert refreshed == [], "an expired entry must not be handed out unprobed"
+    assert probed == ["u"]
+
+
+def test_cached_link_state_names_the_three_windows():
+    cache = {"u": 130.0}
+    assert sd.cached_link_state("u", cache, now=100.0, grace=480.0) == sd.FRESH
+    assert sd.cached_link_state("u", cache, now=130.0, grace=480.0) == sd.STALE
+    assert sd.cached_link_state("u", cache, now=609.9, grace=480.0) == sd.STALE
+    assert sd.cached_link_state("u", cache, now=610.0, grace=480.0) == sd.EXPIRED
+    assert sd.cached_link_state("v", cache, now=100.0, grace=480.0) == sd.EXPIRED
+
+
+def test_the_refresher_confirms_a_live_link_and_forgets_a_dead_one():
+    cache = {"u": 130.0}
+    assert sd.refresh_link("u", lambda u: 200, cache, now=140.0, ttl=30.0) is True
+    assert cache == {"u": 170.0}
+    assert sd.refresh_link("u", lambda u: 404, cache, now=150.0, ttl=30.0) is False
+    assert cache == {}, "a dead link left in the cache would be handed out again"
+
+    def boom(url):
+        raise RuntimeError("connection reset")
+
+    cache = {"u": 130.0}
+    assert sd.refresh_link("u", boom, cache, now=150.0, ttl=30.0) is False
+    assert cache == {}
+
+
+def test_the_stale_refresh_is_started_once_per_url_off_the_request_thread():
+    """_refresh_alive_async lives beside the route, so pin its shape: a
+    single-flight set, a daemon thread, and refresh_link doing the work."""
+    body = _prepare_body("_refresh_alive_async")
+    assert "if cdn_url in _spore_alive_refreshing:" in body and "return" in body, \
+        "two requests inside the grace would start two probes"
+    assert "_spore_alive_refreshing.add(cdn_url)" in body
+    assert "_spore_alive_refreshing.discard(cdn_url)" in body, \
+        "a finished probe never lets the next one run"
+    assert "stream_decisions.refresh_link(" in body and "_head_status" in body
+    assert "threading.Thread(" in body and "daemon=True" in body and ".start()" in body
+    fast = _prepare_body("_prepare_fast")
+    assert "refresh=_refresh_alive_async" in fast and "grace=_ALIVE_STALE_GRACE_SEC" in fast, \
+        "the redirect branch no longer refreshes stale entries behind the request"
+
+
+# 2b. may /stream/<token> skip /spore-stream?
+
+_MKV = {"already_fast": True, "ftyp_size": 0, "cdn_size": 10}
+_MP4 = {"already_fast": True, "ftyp_size": 24, "cdn_size": 10}
+_SLOW_MP4 = {"already_fast": False, "ftyp_size": 24, "cdn_size": 10}
+
+
+def test_the_first_hop_redirects_only_a_redirect_sentinel_with_a_vouched_link():
+    cache = {"u": 130.0}
+    assert sd.warm_link_state(_MKV, "u", cache, now=100.0, grace=480.0) == sd.FRESH
+    assert sd.warm_link_state(_MKV, "u", cache, now=200.0, grace=480.0) == sd.STALE
+    assert sd.warm_link_state(_MKV, "u", cache, now=700.0, grace=480.0) is None
+    assert sd.warm_link_state(_MKV, "v", cache, now=100.0, grace=480.0) is None, \
+        "a link that was never confirmed alive must go through spore-stream"
+
+
+def test_the_first_hop_leaves_proxied_and_unknown_files_to_spore_stream():
+    cache = {"u": 130.0}
+    assert sd.warm_link_state(_MP4, "u", cache, now=100.0, grace=480.0) is None, \
+        "an already fast-start MP4 is proxied so the CDN url is never stored by Plex"
+    assert sd.warm_link_state(_SLOW_MP4, "u", cache, now=100.0, grace=480.0) is None
+    assert sd.warm_link_state(None, "u", cache, now=100.0, grace=480.0) is None, \
+        "the first play has no .fsh record yet"
+    assert sd.warm_link_state(_MKV, None, cache, now=100.0, grace=480.0) is None, \
+        "no cached address means a resolve, which is not this hop's job"
+
+
+def test_cached_url_answers_from_the_cache_alone_and_counts_the_play(monkeypatch, torbox_tripwire):
+    """The first hop must never resolve: a miss is None with no TorBox door
+    opened, a hit is the address plus the idle-release touch."""
+    _rd_item("t-warm")
+    touched = []
+    monkeypatch.setattr(catbox, "_touch_debounced", touched.append)
+    monkeypatch.setattr(catbox, "_is_scan_burst", lambda t: (_ for _ in ()).throw(AssertionError("resolving")))
+    assert catbox.cached_url("t-warm") is None
+    assert touched == []
+    catbox.cache_url("t-warm", "https://cdn/1/5")
+    assert catbox.cached_url("t-warm") == "https://cdn/1/5"
+    assert touched == ["t-warm"], "a play answered by the first hop must count for idle release"
+
+
+def test_the_first_hop_reads_only_what_it_already_knows():
+    """/stream/<token> answers with the CDN url only through the pure
+    decision, from the cache seams, and books the estimated egress; the
+    fallthrough to /spore-stream stays."""
+    body = _prepare_body("_warm_redirect_url")
+    assert "catbox.cached_url(token)" in body, "the first hop resolves instead of peeking"
+    assert "catbox.materialize" not in body and "_head_status" not in body, \
+        "the first hop must never resolve or probe inline"
+    assert "mp4_faststart.load_meta(token)" in body, \
+        "the first hop must not read the whole .fsh (up to the moov) on every request"
+    assert "stream_decisions.warm_link_state(" in body
+    assert "_refresh_alive_async(cdn_url)" in body, "a stale entry is handed out without a refresh"
+    assert "egress_estimate.note_redirect(token, info[\"cdn_size\"])" in body, \
+        "a play answered here would vanish from the egress estimate"
+    route = _prepare_body("stream_redirect")
+    assert "cdn_url = _warm_redirect_url(token)" in route
+    assert "return redirect(cdn_url, code=302)" in route
+    assert 'return redirect(f"/spore-stream/{token}", code=302)' in route, \
+        "the fallthrough to spore-stream is gone"
+
+
 # 3. does the background build get started?
 
 def test_the_build_starts_only_when_there_is_no_cache_and_no_build_running():

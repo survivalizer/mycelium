@@ -337,6 +337,42 @@ def build_and_cache(cdn_url: str, token: str) -> bool:
             return False
 
 
+def load_meta(token: str) -> dict | None:
+    """The fixed fields of the .fsh record without its moov header: enough
+    to tell a redirect sentinel from a proxied MP4. Reads 32 bytes, so it
+    is cheap enough for the first hop of every play; load() below reads
+    the whole file (up to the moov) and is for serving bytes."""
+    path = _cache_path(token)
+    if not path.exists():
+        return None
+    try:
+        with path.open("rb") as fh:
+            raw = fh.read(32)
+        ftyp_size, moov_size, cdn_size, moov_offset = _unpack_meta(raw, path.stat().st_size)
+        return {
+            "ftyp_size":    ftyp_size,
+            "moov_size":    moov_size,
+            "moov_offset":  moov_offset,
+            "cdn_size":     cdn_size,
+            "already_fast": moov_size == 0,
+        }
+    except Exception as exc:
+        log.warning("FastStart: load_meta failed for %s: %s", token, exc)
+        return None
+
+
+def _unpack_meta(raw: bytes, file_size: int) -> tuple[int, int, int, int]:
+    """(ftyp_size, moov_size, cdn_size, moov_offset) from the start of a
+    .fsh record; `file_size` tells the legacy 3-field layout apart."""
+    if file_size < 32:
+        # Legacy .fsh without moov_offset field (3-field header)
+        ftyp_size, moov_size, cdn_size = struct.unpack_from(">QQQ", raw, 0)
+        moov_offset = ftyp_size if moov_size == 0 else cdn_size - moov_size
+    else:
+        ftyp_size, moov_size, cdn_size, moov_offset = struct.unpack_from(">QQQQ", raw, 0)
+    return ftyp_size, moov_size, cdn_size, moov_offset
+
+
 def load(token: str) -> dict | None:
     """
     Load cached fast-start info for token.
@@ -348,14 +384,8 @@ def load(token: str) -> dict | None:
         return None
     try:
         raw = path.read_bytes()
-        if len(raw) < 32:
-            # Legacy .fsh without moov_offset field (3-field header)
-            ftyp_size, moov_size, cdn_size = struct.unpack_from(">QQQ", raw, 0)
-            moov_offset = ftyp_size if moov_size == 0 else cdn_size - moov_size
-            header = raw[24:]
-        else:
-            ftyp_size, moov_size, cdn_size, moov_offset = struct.unpack_from(">QQQQ", raw, 0)
-            header = raw[32:]
+        ftyp_size, moov_size, cdn_size, moov_offset = _unpack_meta(raw, len(raw))
+        header = raw[24:] if len(raw) < 32 else raw[32:]
         return {
             "ftyp_size":    ftyp_size,
             "moov_size":    moov_size,

@@ -66,16 +66,50 @@ def _parse_byte_range(range_hdr: str, file_size: int) -> tuple[int, int]:
 
 @bp.get("/stream/<token>")
 def stream_redirect(token: str):
-    """Catbox endpoint: 302 → /spore-stream/<token> (moov-first proxy).
+    """Catbox endpoint: 302 to the CDN when the address is warm, else 302
+    to /spore-stream/<token> (moov-first proxy), which decides for real.
 
-    Redirecting to spore-stream instead of the raw CDN URL ensures all clients
-    (Jellyfin, Plex direct-stream, Android TV) get moov-first MP4 so playback
-    starts immediately. spore-stream handles catbox materialization itself.
+    A media server that relays for its client (Jellyfin does, for every
+    Range request the client makes) follows both redirects on every request
+    of the play, so once the address is known and alive this hop answers
+    with it directly and the relay saves a round trip through the proxy
+    per request. Anything else (a first play, an MP4 served moov-first, an
+    expired liveness entry) still goes through spore-stream, which handles
+    catbox materialization itself.
     """
     ua  = request.headers.get("User-Agent", "?")[:80]
     rng = request.headers.get("Range", "-")
+    cdn_url = _warm_redirect_url(token)
+    if cdn_url:
+        log.info("stream: token=%s → CDN (warm) ua=%r range=%s", token, ua, rng)
+        return redirect(cdn_url, code=302)
     log.info("stream: token=%s → /spore-stream/ ua=%r range=%s", token, ua, rng)
     return redirect(f"/spore-stream/{token}", code=302)
+
+
+def _warm_redirect_url(token: str) -> str | None:
+    """The CDN address /stream/<token> may hand out itself, or None when
+    /spore-stream has to decide. Reads only what is already known (the URL
+    cache, the .fsh record's fixed fields, the liveness cache): this hop
+    never resolves, never probes inline, never touches TorBox. A stale
+    liveness entry is used while a background probe refreshes it."""
+    import time as _t
+    import mp4_faststart
+
+    cdn_url = catbox.cached_url(token)
+    if not cdn_url:
+        return None
+    info = mp4_faststart.load_meta(token)
+    state = stream_decisions.warm_link_state(
+        info, cdn_url, _spore_alive_cache, _t.monotonic(), _ALIVE_STALE_GRACE_SEC)
+    if state is None:
+        return None
+    if state == stream_decisions.STALE:
+        _refresh_alive_async(cdn_url)
+    # No bytes pass through us on this branch either: same estimate as the
+    # redirect branch of _prepare_fast (see egress_estimate.py).
+    egress_estimate.note_redirect(token, info["cdn_size"])
+    return cdn_url
 
 
 _spore_cold_sizes: dict = {}  # token -> file_size, avoids repeated HEAD on CDN
@@ -85,9 +119,34 @@ _spore_probing: set  = set()  # tokens currently running a background probe
 # below, keyed by url. A single playback session can reopen the source (seek,
 # HLS-transcode restart, client reconnect) several times a minute; without
 # this, each reopen pays a fresh round trip to the CDN just to confirm a link
-# it already confirmed moments ago is still alive.
+# it already confirmed moments ago is still alive. Past the TTL the entry is
+# still handed out for the grace period while a background probe refreshes
+# it, so a steady play never pays the round trip on the request thread; the
+# price is that a link that died inside the grace can be handed out once
+# before the probe forgets it and the next request re-resolves.
 _ALIVE_CHECK_TTL_SEC = 120
+_ALIVE_STALE_GRACE_SEC = 480
 _spore_alive_cache: dict = {}  # cdn_url -> expiry monotonic timestamp
+_spore_alive_refreshing: set = set()  # urls with a background probe running
+
+
+def _refresh_alive_async(cdn_url: str) -> None:
+    """Re-probe a stale liveness entry off the request thread, one probe
+    per url at a time."""
+    if cdn_url in _spore_alive_refreshing:
+        return
+    _spore_alive_refreshing.add(cdn_url)
+
+    def _run():
+        import time as _t
+        try:
+            stream_decisions.refresh_link(
+                cdn_url, _head_status, _spore_alive_cache, _t.monotonic(),
+                _ALIVE_CHECK_TTL_SEC)
+        finally:
+            _spore_alive_refreshing.discard(cdn_url)
+
+    threading.Thread(target=_run, daemon=True, name="alive-refresh").start()
 
 
 @bp.get("/spore-nfs/tree")
@@ -342,10 +401,12 @@ def _prepare_fast(token: str, cdn_url: str, info: dict) -> dict:
         # validate) left Jellyfin/ffmpeg following a redirect into a 400 error
         # page with no recovery. Cheaply confirm it's alive first and re-resolve
         # once if not. A short local cache avoids re-checking with the CDN on
-        # every reopen/seek within the same playback session.
+        # every reopen/seek within the same playback session, and a stale
+        # entry is refreshed behind the request rather than on it.
         if not stream_decisions.link_is_alive(
                 cdn_url, _head_status, _spore_alive_cache, _t.monotonic(),
-                _ALIVE_CHECK_TTL_SEC):
+                _ALIVE_CHECK_TTL_SEC, refresh=_refresh_alive_async,
+                grace=_ALIVE_STALE_GRACE_SEC):
             log.warning("spore-stream: cached CDN url dead for token=%s, re-resolving", token)
             catbox.invalidate_url_cache(token)
             _spore_alive_cache.pop(cdn_url, None)

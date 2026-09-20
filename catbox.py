@@ -239,6 +239,17 @@ def cache_url(token: str, url: str) -> None:
     _cache_put(token, url)
 
 
+def cached_url(token: str) -> str | None:
+    """The hot path of materialize() on its own: the cached CDN URL, or None
+    without resolving anything. A hit counts as a play for the idle-release
+    accounting, exactly as it does inside materialize, because a request
+    answered from here never reaches /spore-stream."""
+    cached = _cache_get(token)
+    if cached:
+        _touch_debounced(token)
+    return cached
+
+
 def invalidate_url_cache(token: str | None = None) -> None:
     with _url_cache_lock:
         if token is None:
