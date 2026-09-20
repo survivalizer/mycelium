@@ -85,9 +85,10 @@ Root: `MEDIA_PATH/series`. For every `*.strm` under it, in path order:
    already carries a future air date. Counted as `requeued`.
 
 The walker runs under the same `_maintenance_lock` as the movie walker,
-so it never overlaps a cleanup, a migration or the other walker. It uses
-the same token snapshot with the same miss re-check, so tokens created
-mid-run are not misread as orphans.
+so it never overlaps a cleanup, a migration or the other walker. It
+needs no token snapshot: every file is resolved with one lookup by show,
+season and episode at the moment it is examined, so a row created
+mid-run is seen, and a few hundred lookups cost SQLite nothing.
 
 Result dict: the movie walker's keys (`scanned, ok, missing_strm,
 orphaned_tokens, relinked, requeued, skipped`) plus `guarded`.
