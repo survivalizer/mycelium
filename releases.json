@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.1.0",
+    "date": "2026-09-20",
+    "notes": [
+      "/stream/<token> redirects straight to the TorBox CDN once the address is warm (URL cached, file served by redirect such as MKV, link confirmed alive recently); anything else still goes through /spore-stream. A media server that relays for its client, as Jellyfin does for every Range request, saves a round trip through the proxy per request. The status stays 302; a client that inspects the Location must accept either target (see docs/COMPATIBILITY.md, shipped as a minor because any redirect-following client sees no difference)",
+      "The CDN liveness check no longer runs on the request thread for a steady play: an entry older than its two-minute window is still used for up to eight minutes more while a background probe refreshes it. A link that dies in that window is handed out until the probe returns and the next request re-resolves"
+    ]
+  },
+  {
     "version": "1.0.1",
     "date": "2026-09-20",
     "notes": [

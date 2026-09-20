@@ -6,7 +6,7 @@ APP_VERSION into a meta tag. A release bumps APP_VERSION here."""
 import json as _json
 import os.path as _path
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 
 with open(_path.join(_path.dirname(__file__), "releases.json"), encoding="utf-8") as _f:
     RELEASES: list[dict] = _json.load(_f)
