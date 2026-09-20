@@ -2,6 +2,22 @@
 
 All notable changes to Mycelium are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- The automatic `.strm` repair (every six hours) and the "Repair broken
+  strm files" button now cover series as well as movies. An episode file
+  whose address is stale is rewritten to the current proxy URL; a file
+  whose token Mycelium no longer knows is removed and the episode goes
+  back on the wanted list. A show with more than half of its files
+  orphaned in one run is skipped and logged, so a database restored from
+  an old backup cannot cascade into a library-wide delete. The repair
+  endpoint answers one block of counts per media type.
+- The "Clean up duplicate strm files" button says it covers movies only,
+  which is what it did all along; series duplicates are removed by the
+  cleanup run.
+
 ## [1.0.0] - 2026-09-14
 
 ### Added

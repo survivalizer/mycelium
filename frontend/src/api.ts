@@ -472,9 +472,7 @@ export const api = {
 
   // Maintenance
   repairStrms: () =>
-    http<{ scanned: number; ok: number; orphaned_tokens: number; relinked: number; deleted: number; skipped: number }>(
-      '/ui/api/repair-strms', { method: 'POST' }
-    ),
+    http<{ movie: RepairCounts; series: RepairCounts }>('/ui/api/repair-strms', { method: 'POST' }),
   scanTorboxLibrary: () =>
     http<{ scanned: number; imported: number; skipped: number; failed: number }>(
       '/ui/api/torbox/scan-library', { method: 'POST' }
@@ -739,6 +737,11 @@ export interface RepairItem {
   reason: string | null;
   created_at: string | null;
 }
+
+export type RepairCounts = {
+  scanned: number; ok: number; missing_strm: number; orphaned_tokens: number;
+  relinked: number; requeued: number; skipped: number; guarded: number;
+};
 
 export interface RepairSummary {
   scanned: number;

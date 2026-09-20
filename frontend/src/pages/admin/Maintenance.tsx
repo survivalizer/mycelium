@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../api';
-import type { RepairItem } from '../../api';
+import type { RepairCounts, RepairItem } from '../../api';
 import { Card, DataTable, StatTile } from '../../components/primitives';
 import type { Column } from '../../components/primitives';
 
@@ -437,7 +437,7 @@ function FilesystemToolsPanel() {
         />
         <ActionButton
           label="Clean up duplicate strm files"
-          desc="Removes extra .strm files from folders that have more than one"
+          desc="Removes extra .strm files from movie folders that have more than one. Series duplicates are handled by Repair strm files"
           run={async () => {
             const d = await api.cleanupDuplicateStrms();
             return `scanned: ${d.scanned}, cleaned: ${d.cleaned}`;
@@ -445,10 +445,11 @@ function FilesystemToolsPanel() {
         />
         <ActionButton
           label="Repair broken strm files"
-          desc="Scans movie .strm files for expired direct TorBox CDN URLs"
+          desc="Rewrites .strm files that point at an expired address or a token Mycelium no longer knows, for movies and series"
           run={async () => {
             const d = await api.repairStrms();
-            return `scanned: ${d.scanned}, ok: ${d.ok}, relinked: ${d.relinked}, deleted: ${d.deleted}`;
+            const sum = (k: keyof RepairCounts) => (d.movie?.[k] ?? 0) + (d.series?.[k] ?? 0);
+            return `scanned: ${sum('scanned')}, ok: ${sum('ok')}, relinked: ${sum('relinked')}, requeued: ${sum('requeued')}, guarded: ${sum('guarded')}`;
           }}
         />
         <ActionButton
