@@ -122,8 +122,8 @@ _spore_probing: set  = set()  # tokens currently running a background probe
 # it already confirmed moments ago is still alive. Past the TTL the entry is
 # still handed out for the grace period while a background probe refreshes
 # it, so a steady play never pays the round trip on the request thread; the
-# price is that a link that died inside the grace can be handed out once
-# before the probe forgets it and the next request re-resolves.
+# price is that a link that died inside the grace is handed out until the
+# probe returns (a few seconds) and forgets it; the next request re-resolves.
 _ALIVE_CHECK_TTL_SEC = 120
 _ALIVE_STALE_GRACE_SEC = 480
 _spore_alive_cache: dict = {}  # cdn_url -> expiry monotonic timestamp
@@ -146,7 +146,12 @@ def _refresh_alive_async(cdn_url: str) -> None:
         finally:
             _spore_alive_refreshing.discard(cdn_url)
 
-    threading.Thread(target=_run, daemon=True, name="alive-refresh").start()
+    try:
+        threading.Thread(target=_run, daemon=True, name="alive-refresh").start()
+    except Exception:
+        # Never leave the url marked as refreshing with no probe running.
+        _spore_alive_refreshing.discard(cdn_url)
+        raise
 
 
 @bp.get("/spore-nfs/tree")

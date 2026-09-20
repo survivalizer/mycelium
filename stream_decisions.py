@@ -19,7 +19,7 @@ def cached_link_state(cdn_url: str, cache: dict, now: float, grace: float) -> st
     past that moment the old answer is still usable while a background
     probe refreshes it."""
     cached_until = cache.get(cdn_url)
-    if not cached_until:
+    if cached_until is None:
         return EXPIRED
     if cached_until > now:
         return FRESH

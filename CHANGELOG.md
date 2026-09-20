@@ -19,9 +19,10 @@ All notable changes to Mycelium are documented in this file.
   steady play: an entry older than its two-minute window is still used
   for up to eight minutes more while a background probe refreshes it, so
   no request pays the round trip. Only an entry older than that, or none
-  at all, is probed inline. A link that dies inside that window can be
-  handed out once before the probe forgets it and the next request
-  re-resolves.
+  at all, is probed inline. A link that dies inside that window is
+  handed out until the background probe returns (a few seconds) and
+  forgets it; the next request re-resolves. Before this change the same
+  was true inside the two-minute window; the window is now ten minutes.
 
 ## [1.0.1] - 2026-09-20
 

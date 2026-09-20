@@ -363,7 +363,9 @@ def load_meta(token: str) -> dict | None:
 
 def _unpack_meta(raw: bytes, file_size: int) -> tuple[int, int, int, int]:
     """(ftyp_size, moov_size, cdn_size, moov_offset) from the start of a
-    .fsh record; `file_size` tells the legacy 3-field layout apart."""
+    .fsh record. `file_size < 32` is how load() has always recognised the
+    legacy 3-field layout: right for the sentinel records that have no
+    header, and shared here so both readers agree on every record."""
     if file_size < 32:
         # Legacy .fsh without moov_offset field (3-field header)
         ftyp_size, moov_size, cdn_size = struct.unpack_from(">QQQ", raw, 0)

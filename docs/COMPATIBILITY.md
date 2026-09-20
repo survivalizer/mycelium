@@ -163,7 +163,8 @@ redirects sees no difference between the two; a client that inspects the
 `Location` must accept either. This route never touches TorBox itself and
 never probes the CDN on the request: a liveness confirmation older than
 its two-minute window is still used for up to eight minutes more while a
-background probe refreshes it.
+background probe refreshes it, so a link that dies in that window is
+handed out until the probe returns and the next request re-resolves.
 
 ```
 $ curl -i https://mycelium.example/stream/1a2b3c4d5e6f7890
